@@ -41,9 +41,11 @@ def gen():
         img = cv2.imread(os.path.join(args.indir, fn))
         img_out, orig_faces, enhanced_faces = processer.process(img, aligned=args.aligned)
 
+        if len(enhanced_faces) == 0:
+            continue
+
         union = np.hstack([orig_faces[0], enhanced_faces[0]])
         cv2.imwrite(os.path.join(args.outdir, fn), union)
-        break
 
 
 if __name__ == '__main__':
