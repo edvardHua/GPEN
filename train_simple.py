@@ -8,10 +8,20 @@ This is a simplified training code of GPEN. It achieves comparable performance a
 import argparse
 import math
 import random
-import os
+import os, sys
 import cv2
 import glob
 from tqdm import tqdm
+
+# 导入基于 mobilenet 的 unet
+cwd = os.getcwd()
+tmp = os.path.join(cwd, "compress", "gan_compression")
+sys.path.append(tmp)
+os.chdir(tmp)
+from compress.gan_compression.models.modules.resnet_architecture.mobile_resnet_generator import MobileResnetGenerator
+
+os.chdir(cwd)
+del sys.path[-1]
 
 import torch
 from torch import nn, autograd, optim
@@ -84,11 +94,11 @@ def d_r1_loss(real_pred, real_img):
 
 def g_nonsaturating_loss(fake_pred, loss_funcs=None, fake_img=None, real_img=None, input_img=None):
     smooth_l1_loss, id_loss = loss_funcs
-    
+
     loss = F.softplus(-fake_pred).mean()
     loss_l1 = smooth_l1_loss(fake_img, real_img)
     loss_id, __, __ = id_loss(fake_img, real_img, input_img)
-    loss += 1.0*loss_l1 + 1.0*loss_id
+    loss += 1.0 * loss_l1 + 1.0 * loss_id
 
     return loss
 
@@ -108,6 +118,7 @@ def g_path_regularize(fake_img, latents, mean_path_length, decay=0.01):
 
     return path_penalty, path_mean.detach(), path_lengths
 
+
 def validation(model, lpips_func, args, device):
     lq_files = sorted(glob.glob(os.path.join(args.val_dir, 'lq', '*.*')))
     hq_files = sorted(glob.glob(os.path.join(args.val_dir, 'hq', '*.*')))
@@ -119,18 +130,21 @@ def validation(model, lpips_func, args, device):
     for lq_f, hq_f in zip(lq_files, hq_files):
         img_lq = cv2.imread(lq_f, cv2.IMREAD_COLOR)
         img_t = torch.from_numpy(img_lq).to(device).permute(2, 0, 1).unsqueeze(0)
-        img_t = (img_t/255.-0.5)/0.5
+        img_t = (img_t / 255. - 0.5) / 0.5
         img_t = F.interpolate(img_t, (args.size, args.size))
         img_t = torch.flip(img_t, [1])
-        
+
         with torch.no_grad():
-            img_out, __ = model(img_t)
-        
+            if isinstance(model, FullGenerator):
+                img_out, __ = model(img_t)
+            else:
+                img_out = model(img_t)
+
             img_hq = lpips.im2tensor(lpips.load_image(hq_f)).to(device)
             img_hq = F.interpolate(img_hq, (args.size, args.size))
             dist_sum += lpips_func.forward(img_out, img_hq)
-    
-    return dist_sum.data/len(lq_files)
+
+    return dist_sum.data / len(lq_files)
 
 
 def train(args, loader, generator, discriminator, losses, g_optim, d_optim, g_ema, lpips_func, device):
@@ -158,7 +172,7 @@ def train(args, loader, generator, discriminator, losses, g_optim, d_optim, g_em
     else:
         g_module = generator
         d_module = discriminator
- 
+
     accum = 0.5 ** (32 / (10 * 1000))
 
     for idx in pbar:
@@ -176,7 +190,10 @@ def train(args, loader, generator, discriminator, losses, g_optim, d_optim, g_em
         requires_grad(generator, False)
         requires_grad(discriminator, True)
 
-        fake_img, _ = generator(degraded_img)
+        if isinstance(generator, FullGenerator):
+            fake_img, _ = generator(degraded_img)
+        else:
+            fake_img = generator(degraded_img)
         fake_pred = discriminator(fake_img)
 
         real_pred = discriminator(real_img)
@@ -192,7 +209,7 @@ def train(args, loader, generator, discriminator, losses, g_optim, d_optim, g_em
 
         d_regularize = i % args.d_reg_every == 0
 
-        if d_regularize:
+        if d_regularize and isinstance(generator, FullGenerator):
             real_img.requires_grad = True
             real_pred = discriminator(real_img)
             r1_loss = d_r1_loss(real_pred, real_img)
@@ -207,7 +224,10 @@ def train(args, loader, generator, discriminator, losses, g_optim, d_optim, g_em
         requires_grad(generator, True)
         requires_grad(discriminator, False)
 
-        fake_img, _ = generator(degraded_img)
+        if isinstance(generator, FullGenerator):
+            fake_img, _ = generator(degraded_img)
+        else:
+            fake_img = generator(degraded_img)
         fake_pred = discriminator(fake_img)
         g_loss = g_nonsaturating_loss(fake_pred, losses, fake_img, real_img, degraded_img)
 
@@ -219,7 +239,7 @@ def train(args, loader, generator, discriminator, losses, g_optim, d_optim, g_em
 
         g_regularize = i % args.g_reg_every == 0
 
-        if g_regularize:
+        if g_regularize and isinstance(generator, FullGenerator):
             path_batch_size = max(1, args.batch // args.path_batch_shrink)
 
             fake_img, latents = generator(degraded_img, return_latents=True)
@@ -239,7 +259,7 @@ def train(args, loader, generator, discriminator, losses, g_optim, d_optim, g_em
             g_optim.step()
 
             mean_path_length_avg = (
-                reduce_sum(mean_path_length).item() / get_world_size()
+                    reduce_sum(mean_path_length).item() / get_world_size()
             )
 
         loss_dict['path'] = path_loss
@@ -263,12 +283,15 @@ def train(args, loader, generator, discriminator, losses, g_optim, d_optim, g_em
                     f'd: {d_loss_val:.4f}; g: {g_loss_val:.4f}; r1: {r1_val:.4f}; '
                 )
             )
-            
+
             if i % args.save_freq == 0:
                 with torch.no_grad():
                     g_ema.eval()
-                    sample, _ = g_ema(degraded_img)
-                    sample = torch.cat((degraded_img, sample, real_img), 0) 
+                    if isinstance(g_ema, FullGenerator):
+                        sample, _ = g_ema(degraded_img)
+                    else:
+                        sample = g_ema(degraded_img)
+                    sample = torch.cat((degraded_img, sample, real_img), 0)
                     utils.save_image(
                         sample,
                         f'{args.sample}/{str(i).zfill(6)}.png',
@@ -316,13 +339,15 @@ if __name__ == '__main__':
     parser.add_argument('--pretrain', type=str, default=None)
     parser.add_argument('--sample', type=str, default='sample')
     parser.add_argument('--val_dir', type=str, default='val')
+    parser.add_argument("--model_type", type=str, default="mobile", help="network architecture = ori, mobile")
+    parser.add_argument("--device", type=str, default="cuda")
 
     args = parser.parse_args()
 
     os.makedirs(args.ckpt, exist_ok=True)
     os.makedirs(args.sample, exist_ok=True)
 
-    device = 'cuda'
+    device = args.device
 
     n_gpu = int(os.environ['WORLD_SIZE']) if 'WORLD_SIZE' in os.environ else 1
     args.distributed = n_gpu > 1
@@ -337,21 +362,30 @@ if __name__ == '__main__':
 
     args.start_iter = 0
 
-    generator = FullGenerator(
-        args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier, narrow=args.narrow, device=device
-    ).to(device)
+    if args.model_type == "mobile":
+        generator = MobileResnetGenerator(3, 3, 32, dropout_rate=0.2).to(device)
+    else:
+        generator = FullGenerator(
+            args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier, narrow=args.narrow,
+            device=device
+        ).to(device)
     discriminator = Discriminator(
         args.size, channel_multiplier=args.channel_multiplier, narrow=args.narrow, device=device
     ).to(device)
-    g_ema = FullGenerator(
-        args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier, narrow=args.narrow, device=device
-    ).to(device)
+
+    if args.model_type == "mobile":
+        g_ema = MobileResnetGenerator(3, 3, 32, dropout_rate=0.2).to(device)
+    else:
+        g_ema = FullGenerator(
+            args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier, narrow=args.narrow,
+            device=device
+        ).to(device)
     g_ema.eval()
     accumulate(g_ema, generator, 0)
 
     g_reg_ratio = args.g_reg_every / (args.g_reg_every + 1)
     d_reg_ratio = args.d_reg_every / (args.d_reg_every + 1)
-    
+
     g_optim = optim.Adam(
         generator.parameters(),
         lr=args.lr * g_reg_ratio,
@@ -366,20 +400,20 @@ if __name__ == '__main__':
 
     if args.pretrain is not None:
         print('load model:', args.pretrain)
-        
+
         ckpt = torch.load(args.pretrain)
 
         generator.load_state_dict(ckpt['g'])
         discriminator.load_state_dict(ckpt['d'])
         g_ema.load_state_dict(ckpt['g_ema'])
-            
+
         g_optim.load_state_dict(ckpt['g_optim'])
         d_optim.load_state_dict(ckpt['d_optim'])
-    
+
     smooth_l1_loss = torch.nn.SmoothL1Loss().to(device)
     id_loss = IDLoss(args.base_dir, device, ckpt_dict=None)
-    lpips_func = lpips.LPIPS(net='alex',version='0.1').to(device)
-    
+    lpips_func = lpips.LPIPS(net='alex', version='0.1').to(device)
+
     if args.distributed:
         generator = nn.parallel.DistributedDataParallel(
             generator,
@@ -410,5 +444,5 @@ if __name__ == '__main__':
         drop_last=True,
     )
 
-    train(args, loader, generator, discriminator, [smooth_l1_loss, id_loss], g_optim, d_optim, g_ema, lpips_func, device)
-   
+    train(args, loader, generator, discriminator, [smooth_l1_loss, id_loss], g_optim, d_optim, g_ema, lpips_func,
+          device)
