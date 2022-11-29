@@ -2,14 +2,6 @@ import functools
 
 import torch
 from torch import nn
-from pprint import pprint
-
-import os
-import sys
-
-sys.path.append(os.getcwd())
-print(os.getcwd())
-print(sys.path)
 
 from models.modules.mobile_modules import SeparableConv2d
 from models.networks import BaseNetwork
@@ -129,13 +121,13 @@ class MobileResnetGenerator(BaseNetwork):
         #     input = module(input)
         # return input
 
-        for i, module in enumerate(self.model):
-            output = module(input)
-            # if isinstance(module, MobileResnetBlock):
-            print(i, input.shape, output.shape)
-            input = output
-        return output
-        # return self.model(input)
+        # for i, module in enumerate(self.model):
+        #     output = module(input)
+        #     # if isinstance(module, MobileResnetBlock):
+        #     print(i, input.shape, output.shape)
+        #     input = output
+        # return output
+        return self.model(input)
 
 
 if __name__ == '__main__':

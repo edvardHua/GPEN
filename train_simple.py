@@ -6,6 +6,7 @@ This is a simplified training code of GPEN. It achieves comparable performance a
 @Modified by yangxy (yangtao9009@gmail.com)
 '''
 import argparse
+import json
 import math
 import time
 import random
@@ -30,6 +31,7 @@ from torch.nn import functional as F
 from torch.utils import data
 import torch.distributed as dist
 from torchvision import transforms, utils
+from pprint import pprint
 
 import __init_paths
 from training.data_loader.dataset_face import FaceDataset
@@ -322,6 +324,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--path', type=str, required=True)
+    parser.add_argument("--split_hor", action="store_true")
     parser.add_argument('--base_dir', type=str, default='./')
     parser.add_argument('--iter', type=int, default=4000000)
     parser.add_argument('--batch', type=int, default=4)
@@ -342,13 +345,20 @@ if __name__ == '__main__':
     parser.add_argument('--val_dir', type=str, default='val')
     parser.add_argument("--model_type", type=str, default="mobile", help="network architecture = ori, mobile")
     parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--test_mode", action="store_true")
 
     args = parser.parse_args()
+    args_dict = vars(args)
 
-    os.makedirs(args.ckpt + "_%s" % time.strftime(
-        "one_click_%m-%d_%H_%M_%S", time.localtime()), exist_ok=True)
-    os.makedirs(args.sample + "_%s" % time.strftime(
-        "one_click_%m-%d_%H_%M_%S", time.localtime()), exist_ok=True)
+    args.ckpt = args.ckpt + "_%s" % time.strftime(
+        "one_click_%m-%d_%H_%M_%S", time.localtime())
+    args.sample = args.sample + "_%s" % time.strftime(
+        "one_click_%m-%d_%H_%M_%S", time.localtime())
+
+    if not args.test_mode:
+        os.makedirs(args.ckpt, exist_ok=True)
+        os.makedirs(args.sample, exist_ok=True)
+        json.dump(args_dict, open(os.path.join(args.sample, "config.json"), "w"), sort_keys=True, indent=4)
 
     device = args.device
 
@@ -438,8 +448,10 @@ if __name__ == '__main__':
         output_device=args.local_rank,
         broadcast_buffers=False,
     )
-
-    dataset = FaceDataset(args.path, args.size)
+    if args.split_hor:
+        dataset = FaceDataset(args.path, args.size, True)
+    else:
+        dataset = FaceDataset(args.path, args.size)
     loader = data.DataLoader(
         dataset,
         batch_size=args.batch,
