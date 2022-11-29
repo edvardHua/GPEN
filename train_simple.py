@@ -7,6 +7,7 @@ This is a simplified training code of GPEN. It achieves comparable performance a
 '''
 import argparse
 import math
+import time
 import random
 import os, sys
 import cv2
@@ -344,8 +345,10 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    os.makedirs(args.ckpt, exist_ok=True)
-    os.makedirs(args.sample, exist_ok=True)
+    os.makedirs(args.ckpt + "_%s" % time.strftime(
+        "one_click_%m-%d_%H_%M_%S", time.localtime()), exist_ok=True)
+    os.makedirs(args.sample + "_%s" % time.strftime(
+        "one_click_%m-%d_%H_%M_%S", time.localtime()), exist_ok=True)
 
     device = args.device
 
@@ -354,8 +357,8 @@ if __name__ == '__main__':
 
     if args.distributed:
         torch.cuda.set_device(args.local_rank)
-        torch.distributed.init_process_group(backend='nccl', init_method='env://')
-        synchronize()
+    torch.distributed.init_process_group(backend='nccl', init_method='env://')
+    synchronize()
 
     args.latent = 512
     args.n_mlp = 8
@@ -401,14 +404,14 @@ if __name__ == '__main__':
     if args.pretrain is not None:
         print('load model:', args.pretrain)
 
-        ckpt = torch.load(args.pretrain)
+    ckpt = torch.load(args.pretrain)
 
-        generator.load_state_dict(ckpt['g'])
-        discriminator.load_state_dict(ckpt['d'])
-        g_ema.load_state_dict(ckpt['g_ema'])
+    generator.load_state_dict(ckpt['g'])
+    discriminator.load_state_dict(ckpt['d'])
+    g_ema.load_state_dict(ckpt['g_ema'])
 
-        g_optim.load_state_dict(ckpt['g_optim'])
-        d_optim.load_state_dict(ckpt['d_optim'])
+    g_optim.load_state_dict(ckpt['g_optim'])
+    d_optim.load_state_dict(ckpt['d_optim'])
 
     smooth_l1_loss = torch.nn.SmoothL1Loss().to(device)
     id_loss = IDLoss(args.base_dir, device, ckpt_dict=None)
@@ -422,19 +425,19 @@ if __name__ == '__main__':
             broadcast_buffers=False,
         )
 
-        discriminator = nn.parallel.DistributedDataParallel(
-            discriminator,
-            device_ids=[args.local_rank],
-            output_device=args.local_rank,
-            broadcast_buffers=False,
-        )
+    discriminator = nn.parallel.DistributedDataParallel(
+        discriminator,
+        device_ids=[args.local_rank],
+        output_device=args.local_rank,
+        broadcast_buffers=False,
+    )
 
-        id_loss = nn.parallel.DistributedDataParallel(
-            id_loss,
-            device_ids=[args.local_rank],
-            output_device=args.local_rank,
-            broadcast_buffers=False,
-        )
+    id_loss = nn.parallel.DistributedDataParallel(
+        id_loss,
+        device_ids=[args.local_rank],
+        output_device=args.local_rank,
+        broadcast_buffers=False,
+    )
 
     dataset = FaceDataset(args.path, args.size)
     loader = data.DataLoader(
